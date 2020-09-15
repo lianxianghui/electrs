@@ -31,7 +31,7 @@ use {
 
 use serde::Serialize;
 use serde_json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::ParseIntError;
 use std::os::unix::fs::FileTypeExt;
 use std::str::FromStr;
@@ -117,6 +117,8 @@ struct TransactionValue {
     fee: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<TransactionStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confirmations: Option<usize>,
 }
 
 impl TransactionValue {
@@ -125,6 +127,7 @@ impl TransactionValue {
         blockid: Option<BlockId>,
         txos: &HashMap<OutPoint, TxOut>,
         config: &Config,
+        best_height: usize,
     ) -> Self {
         let prevouts = extract_tx_prevouts(&tx, &txos, true);
         let vins: Vec<TxInValue> = tx
@@ -142,7 +145,10 @@ impl TransactionValue {
             .collect();
 
         let fee = get_tx_fee(&tx, &prevouts, config.network_type);
-
+        let confirmations= match blockid.clone() {
+            Some(b) =>  Some(best_height - b.height + 1),
+            None => None,
+        };
         TransactionValue {
             txid: tx.txid(),
             version: tx.version,
@@ -153,6 +159,7 @@ impl TransactionValue {
             weight: tx.get_weight() as u32,
             fee,
             status: Some(TransactionStatus::from(blockid)),
+            confirmations,
         }
     }
 }
@@ -185,7 +192,7 @@ impl TxInValue {
     fn new(txin: &TxIn, prevout: Option<&TxOut>, config: &Config) -> Self {
         let witness = &txin.witness;
         #[cfg(feature = "liquid")]
-        let witness = &witness.script_witness;
+            let witness = &witness.script_witness;
 
         let witness = if !witness.is_empty() {
             Some(witness.iter().map(hex::encode).collect())
@@ -265,31 +272,31 @@ struct TxOutValue {
 impl TxOutValue {
     fn new(txout: &TxOut, config: &Config) -> Self {
         #[cfg(not(feature = "liquid"))]
-        let value = txout.value;
+            let value = txout.value;
 
         #[cfg(feature = "liquid")]
-        let value = txout.value.explicit();
+            let value = txout.value.explicit();
         #[cfg(feature = "liquid")]
-        let valuecommitment = match txout.value {
+            let valuecommitment = match txout.value {
             Value::Confidential(..) => Some(hex::encode(encode::serialize(&txout.value))),
             _ => None,
         };
 
         #[cfg(feature = "liquid")]
-        let asset = match txout.asset {
+            let asset = match txout.asset {
             Asset::Explicit(value) => Some(value.to_hex()),
             _ => None,
         };
         #[cfg(feature = "liquid")]
-        let assetcommitment = match txout.asset {
+            let assetcommitment = match txout.asset {
             Asset::Confidential(..) => Some(hex::encode(encode::serialize(&txout.asset))),
             _ => None,
         };
 
         #[cfg(not(feature = "liquid"))]
-        let is_fee = false;
+            let is_fee = false;
         #[cfg(feature = "liquid")]
-        let is_fee = txout.is_fee();
+            let is_fee = txout.is_fee();
 
         let script = &txout.script_pubkey;
         let script_asm = get_script_asm(&script);
@@ -319,7 +326,7 @@ impl TxOutValue {
         };
 
         #[cfg(feature = "liquid")]
-        let pegout = PegoutValue::from_txout(txout, config.network_type, config.parent_network);
+            let pegout = PegoutValue::from_txout(txout, config.network_type, config.parent_network);
 
         TxOutValue {
             scriptpubkey: script.clone(),
@@ -485,9 +492,9 @@ fn prepare_txs(
         .collect();
 
     let prevouts = query.lookup_txos(&outpoints);
-
+    let best_height = query.chain().best_height();
     txs.into_iter()
-        .map(|(tx, blockid)| TransactionValue::new(tx, blockid, &prevouts, config))
+        .map(|(tx, blockid)| TransactionValue::new(tx, blockid, &prevouts, config, best_height))
         .collect()
 }
 
@@ -746,6 +753,38 @@ fn handle_request(
                 }),
                 TTL_SHORT,
             )
+        }
+        (
+            &Method::GET,
+            Some(script_type @ &"addresses"),
+            Some(addresses_str),
+            Some(&"txs"),
+            None,
+            None,
+        ) => {
+            let addresses = addresses_str.split(",");
+            let mut txs = vec![];
+            for address_str in addresses {
+                let script_hash = to_scripthash(&"address", address_str, config.network_type)?;
+                txs.extend(
+                    query
+                        .mempool()
+                        .history(&script_hash[..], 10000)
+                        .into_iter()
+                        .map(|tx| (tx, None)),
+                );
+
+                txs.extend(
+                    query
+                        .chain()
+                        .history(&script_hash[..], None, 10000)
+                        .into_iter()
+                        .map(|(tx, blockid)| (tx, Some(blockid))),
+                );
+            }
+            let mut uniques = HashSet::new();
+            txs.retain(|(tx, _)| uniques.insert(tx.ntxid()));
+            json_response(prepare_txs(txs, query, config), TTL_SHORT)
         }
         (
             &Method::GET,
@@ -1114,8 +1153,8 @@ fn handle_request(
 }
 
 fn http_message<T>(status: StatusCode, message: T, ttl: u32) -> Result<Response<Body>, HttpError>
-where
-    T: Into<Body>,
+    where
+        T: Into<Body>,
 {
     Ok(Response::builder()
         .status(status)
@@ -1158,13 +1197,13 @@ fn blocks(
         current_hash = blockhm.header_entry.header().prev_blockhash;
 
         #[allow(unused_mut)]
-        let mut value = BlockValue::new(blockhm, config.network_type);
+            let mut value = BlockValue::new(blockhm, config.network_type);
 
         #[cfg(feature = "liquid")]
-        {
-            // exclude ExtData in block list view
-            value.ext = None;
-        }
+            {
+                // exclude ExtData in block list view
+                value.ext = None;
+            }
         values.push(value);
 
         if current_hash[..] == zero[..] {
@@ -1191,13 +1230,13 @@ fn address_to_scripthash(addr: &str, network: Network) -> Result<FullHash, HttpE
     let addr = address::Address::from_str(addr)?;
 
     #[cfg(not(feature = "liquid"))]
-    let is_expected_net = {
+        let is_expected_net = {
         let addr_network = Network::from(addr.network);
         addr_network == network || (addr_network == Network::Testnet && network == Network::Regtest)
     };
 
     #[cfg(feature = "liquid")]
-    let is_expected_net = addr.params == network.address_params();
+        let is_expected_net = addr.params == network.address_params();
 
     if !is_expected_net {
         bail!(HttpError::from("Address on invalid network".to_string()))
