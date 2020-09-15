@@ -128,6 +128,7 @@ impl TransactionValue {
         txos: &HashMap<OutPoint, TxOut>,
         config: &Config,
         best_height: usize,
+        spends: Vec<SpendingValue>,
     ) -> Self {
         let prevouts = extract_tx_prevouts(&tx, &txos, true);
         let vins: Vec<TxInValue> = tx
@@ -140,8 +141,8 @@ impl TransactionValue {
             .collect();
         let vouts: Vec<TxOutValue> = tx
             .output
-            .iter()
-            .map(|txout| TxOutValue::new(txout, config))
+            .iter().zip(spends.iter())
+            .map(|(txout, spending_value) | TxOutValue::new(txout, config, Some(spending_value.spent)))
             .collect();
 
         let fee = get_tx_fee(&tx, &prevouts, config.network_type);
@@ -207,7 +208,7 @@ impl TxInValue {
         TxInValue {
             txid: txin.previous_output.txid,
             vout: txin.previous_output.vout,
-            prevout: prevout.map(|prevout| TxOutValue::new(prevout, config)),
+            prevout: prevout.map(|prevout| TxOutValue::new(prevout, config, None)),
             scriptsig_asm: get_script_asm(&txin.script_sig),
             witness,
 
@@ -238,6 +239,8 @@ impl TxInValue {
 
 #[derive(Serialize, Deserialize, Clone)]
 struct TxOutValue {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    spent: Option<bool>,
     scriptpubkey: Script,
     scriptpubkey_asm: String,
     scriptpubkey_type: String,
@@ -270,7 +273,7 @@ struct TxOutValue {
 }
 
 impl TxOutValue {
-    fn new(txout: &TxOut, config: &Config) -> Self {
+    fn new(txout: &TxOut, config: &Config, spent: Option<bool>) -> Self {
         #[cfg(not(feature = "liquid"))]
             let value = txout.value;
 
@@ -324,11 +327,12 @@ impl TxOutValue {
         } else {
             "unknown"
         };
-
+        
         #[cfg(feature = "liquid")]
             let pegout = PegoutValue::from_txout(txout, config.network_type, config.parent_network);
 
         TxOutValue {
+            spent,
             scriptpubkey: script.clone(),
             scriptpubkey_asm: script_asm,
             scriptpubkey_address: script_addr,
@@ -493,8 +497,16 @@ fn prepare_txs(
 
     let prevouts = query.lookup_txos(&outpoints);
     let best_height = query.chain().best_height();
+
     txs.into_iter()
-        .map(|(tx, blockid)| TransactionValue::new(tx, blockid, &prevouts, config, best_height))
+        .map(|(tx, blockid)|  {
+            let spends: Vec<SpendingValue> = query
+                .lookup_tx_spends(tx.clone())
+                .into_iter()
+                .map(|spend| spend.map_or_else(SpendingValue::default, SpendingValue::from))
+                .collect();
+            TransactionValue::new(tx, blockid, &prevouts, config, best_height, spends)
+        })
         .collect()
 }
 
