@@ -327,7 +327,7 @@ impl TxOutValue {
         } else {
             "unknown"
         };
-        
+
         #[cfg(feature = "liquid")]
             let pegout = PegoutValue::from_txout(txout, config.network_type, config.parent_network);
 
@@ -1048,6 +1048,18 @@ fn handle_request(
                 .broadcast_raw(&txhex)
                 .map_err(|err| HttpError::from(err.description().to_string()))?;
             http_message(StatusCode::OK, txid.to_hex(), 0)
+        }
+
+        (&Method::POST, Some(&"pushtx"), None, None, None, None) => {
+            let body_str =  String::from_utf8(body.to_vec())?;
+            let body_json: serde_json::Value = serde_json::from_str(&body_str).unwrap();
+            let hex: &str = body_json["hex"].as_str().unwrap();
+            let txid = query
+                .broadcast_raw(hex)
+                .map_err(|err| HttpError::from(err.description().to_string()))?;
+            let mut result = HashMap::new();
+            result.insert("txid", txid);
+            json_response(result, TTL_SHORT)
         }
 
         (&Method::GET, Some(&"mempool"), None, None, None, None) => {
