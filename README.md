@@ -3,6 +3,8 @@
 
 2. 返回的交易信息增加了confirmations，spent等字段
 
+以下是原来的说明
+
 # Esplora - Electrs backend API
 
 A block chain index engine and HTTP API written in Rust based on [romanz/electrs](https://github.com/romanz/electrs).
