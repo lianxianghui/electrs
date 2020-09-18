@@ -1,9 +1,10 @@
+# 修改说明
 在原来 https://github.com/Blockstream/electrs 的API基础上:
 1. 加了 GET /addresses/:addresses/txs 接口，可以一次获取多个地址的交易
 
 2. 返回的交易信息增加了confirmations，spent等字段
 
-以下是原来的说明
+以下是原有的说明
 
 # Esplora - Electrs backend API
 
